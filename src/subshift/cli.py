@@ -31,10 +31,10 @@ class SubShiftCLI:
             epilog="Environment variables: OPENAI_API_KEY, GOOGLE_PLACES_API_KEY"
         );
         
-        # Required arguments
+        # Required arguments (media optional for SDH cost estimation)
         parser.add_argument(
             "--media", "--video", "-v",
-            required=True,
+            required=False,
             type=Path,
             dest="media",
             help="Path to media file (.mp4, .mkv, .avi, etc.)"
@@ -70,6 +70,12 @@ class SubShiftCLI:
             help="Minimum characters required for subtitle matching (default: 40)"
         );
         
+        parser.add_argument(
+            "--samples",
+            type=int,
+            default=4,
+            help="Number of audio samples to extract (default: 4)"
+        );
         
         parser.add_argument(
             "--api",
@@ -126,8 +132,12 @@ class SubShiftCLI:
         """Validate parsed arguments and environment setup."""
         errors = [];
         
-        # Check if files exist
-        if not self.args.media.exists():
+        # Check if media file is required (not for SDH cost estimation)
+        if not self.args.sdh_cost_estimate and not self.args.media:
+            errors.append( "Media file is required except for SDH cost estimation" );
+        
+        # Check if files exist (when provided)
+        if self.args.media and not self.args.media.exists():
             errors.append( f"Media file not found: {self.args.media}" );
         
         if not self.args.subtitle.exists():
@@ -179,7 +189,8 @@ class SubShiftCLI:
         
         # Log startup information
         self.logger.info( f"SubShift v0.1.0 starting..." );
-        self.logger.info( f"Media: {self.args.media}" );
+        if self.args.media:
+            self.logger.info( f"Media: {self.args.media}" );
         self.logger.info( f"Subtitles: {self.args.subtitle}" );
         self.logger.info( f"AI Engine: {self.args.api}" );
         self.logger.info( f"Debug mode: {self.args.debug}" );
@@ -233,6 +244,7 @@ def main():
         search_window=args.search_window,
         similarity_threshold=args.similarity_threshold,
         min_chars=args.min_chars,
+        samples=args.samples,
         debug=args.debug,
         use_curses=args.curses,
         dry_run=args.dry_run,

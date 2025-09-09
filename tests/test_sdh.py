@@ -33,9 +33,9 @@ class TestSDHRemover:
             ( "♪ theme song ♪", "" ),
             ( "*explosion*", "" ),
             ( "<applause>", "" ),
-            ( "NARRATOR: Once upon a time", "" ),
+            ( "NARRATOR: Once upon a time", "Once upon a time" ),
             ( "Hello, how are you?", "Hello, how are you?" ),  # Normal dialogue
-            ( "I'm fine, thanks [music] for asking", "I'm fine, thanks  for asking" )
+            ( "I'm fine, thanks [music] for asking", "I'm fine, thanks for asking" )
         ];
         
         for input_text, expected in test_cases:

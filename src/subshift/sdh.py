@@ -37,7 +37,7 @@ class SDHRemover:
             r'♪.*?♪',             # ♪ music lyrics ♪
             r'\*.*?\*',           # *sound effect*
             r'<.*?>',             # <applause>
-            r'^[A-Z\s]+:',        # SPEAKER NAME:
+            r'^[A-Z][A-Z\s]+:',   # SPEAKER NAME: (requires at least 2 uppercase letters)
             r'\b(MUSIC|SOUND|SFX|EFFECT)S?\b',  # Keywords
         ];
     
@@ -147,6 +147,13 @@ Respond with ONLY a JSON array of boolean values (true=SDH, false=dialogue) in t
                 
                 result_text = response.choices[0].message.content.strip();
                 
+                # Remove markdown code blocks if present
+                if result_text.startswith('```'):
+                    lines = result_text.split('\n');
+                    # Find the actual JSON content (skip ```json and ```)
+                    json_lines = [line for line in lines if line and not line.startswith('```')];
+                    result_text = '\n'.join( json_lines ).strip();
+                
                 # Parse JSON response
                 try:
                     sdh_flags = json.loads( result_text );
@@ -190,8 +197,13 @@ Respond with ONLY a JSON array of boolean values (true=SDH, false=dialogue) in t
             return True;
         
         # Check for sound effect keywords
-        sound_keywords = [ 'sound', 'noise', 'effect', 'audio', 'sfx' ];
+        sound_keywords = [ 'sound', 'noise', 'effect', 'audio', 'sfx', 'footsteps', 'approaching', 'walking', 'running' ];
         if any( keyword in text.lower() for keyword in sound_keywords ):
+            return True;
+        
+        # Check for action descriptions (often SDH)
+        action_keywords = [ 'door', 'phone', 'car', 'engine', 'crowd', 'applause', 'cheering' ];
+        if any( keyword in text.lower() for keyword in action_keywords ):
             return True;
         
         # If it looks like normal dialogue, keep it

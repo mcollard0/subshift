@@ -35,6 +35,7 @@ class SubtitleSynchronizer:
         search_window: int = 20,
         similarity_threshold: float = 0.7,
         min_chars: int = 40,
+        samples: int = 4,
         debug: bool = False,
         use_curses: bool = False,
         dry_run: bool = False,
@@ -47,15 +48,16 @@ class SubtitleSynchronizer:
         self.search_window = search_window;
         self.similarity_threshold = similarity_threshold;
         self.min_chars = min_chars;
+        self.samples = samples;
         self.debug = debug;
         self.use_curses = use_curses;
         self.dry_run = dry_run;
         self.remove_sdh = remove_sdh;
         
-        self.logger = get_logger();
+        self.logger = get_logger( debug=debug );
         
         # Initialize components
-        self.audio_processor = AudioProcessor();
+        self.audio_processor = AudioProcessor( debug=debug );
         self.transcription_engine = create_transcription_engine( api_engine, api_key );
         self.subtitle_processor = SubtitleProcessor( min_chars=min_chars );
         self.alignment_engine = AlignmentEngine( 
@@ -74,7 +76,8 @@ class SubtitleSynchronizer:
         self.logger.info( "=== STEP 1: AUDIO EXTRACTION ===" );
         
         self.audio_samples = self.audio_processor.extract_audio_samples( 
-            self.video_file
+            self.video_file, 
+            num_samples=self.samples
         );
         
         if not self.audio_samples:

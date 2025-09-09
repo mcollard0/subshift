@@ -35,8 +35,8 @@ class AudioProcessor:
     - Format conversion for AI compatibility (16kHz mono PCM)
     """
     
-    def __init__( self, temp_dir: Optional[Path] = None ):
-        self.logger = get_logger();
+    def __init__( self, temp_dir: Optional[Path] = None, debug: bool = False ):
+        self.logger = get_logger( debug=debug );
         self.temp_dir = Path( temp_dir ) if temp_dir else Path( "tmp" );
         self.temp_dir.mkdir( exist_ok=True );
         
@@ -216,7 +216,8 @@ class AudioProcessor:
                 failed_indices.append( i );
         
         # Retry failed extractions once with different random times
-        if failed_indices and len( samples ) < num_samples:
+        max_samples = num_samples if num_samples is not None else len( sample_times );
+        if failed_indices and len( samples ) < max_samples:
             self.logger.info( f"Retrying {len( failed_indices )} failed extractions" );
             
             # Generate new sample times for retries

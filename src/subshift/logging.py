@@ -24,7 +24,7 @@ class SubShiftLogger:
     
     def __init__( self, name: str = "subshift", debug: bool = False ):
         self.name = name;
-        self.debug = debug;
+        self.debug_mode = debug;  # Renamed to avoid conflict with debug() method
         self.console = Console();
         
         # Ensure logs directory exists
@@ -54,7 +54,7 @@ class SubShiftLogger:
     def _setup_logger( self ):
         """Setup logger with Rich console and file handlers."""
         logger = logging.getLogger( self.name );
-        logger.setLevel( logging.DEBUG if self.debug else logging.INFO );
+        logger.setLevel( logging.DEBUG if self.debug_mode else logging.INFO );
         
         # Clear existing handlers
         logger.handlers.clear();
@@ -64,9 +64,9 @@ class SubShiftLogger:
             console=self.console,
             rich_tracebacks=True,
             show_time=True,
-            show_path=self.debug
+            show_path=self.debug_mode
         );
-        console_handler.setLevel( logging.DEBUG if self.debug else logging.INFO );
+        console_handler.setLevel( logging.DEBUG if self.debug_mode else logging.INFO );
         console_formatter = logging.Formatter( "%(message)s" );
         console_handler.setFormatter( console_formatter );
         logger.addHandler( console_handler );
@@ -115,6 +115,9 @@ def get_logger( debug: bool = False ) -> SubShiftLogger:
     """Get the global SubShift logger instance."""
     global _logger;
     if _logger is None:
+        _logger = SubShiftLogger( debug=debug );
+    elif _logger.debug_mode != debug:
+        # Recreate logger if debug mode changed
         _logger = SubShiftLogger( debug=debug );
     return _logger;
 

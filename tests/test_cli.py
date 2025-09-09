@@ -50,8 +50,8 @@ class TestSubShiftCLI:
             '--debug'
         ] );
         
-        assert args.video == Path( 'test.mp4' );
-        assert args.subs == Path( 'test.srt' );
+        assert args.media == Path( 'test.mp4' );
+        assert args.subtitle == Path( 'test.srt' );
         assert args.debug == True;
         assert args.api == 'openai';  # Default
     
