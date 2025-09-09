@@ -26,10 +26,10 @@ pip install -r requirements.txt
 export OPENAI_API_KEY="your_api_key_here"
 
 # Basic sync
-subshift --video movie.mp4 --subs movie.srt
+subshift --media movie.mp4 --sub movie.srt
 
 # Advanced sync with SDH removal
-subshift --video show.mkv --subs show.srt --remove-sdh --debug
+subshift --media show.mkv --sub show.srt --remove-sdh --debug
 ```
 
 ## 📖 Usage Examples
@@ -37,40 +37,40 @@ subshift --video show.mkv --subs show.srt --remove-sdh --debug
 ### Basic Synchronization
 ```bash
 # Standard sync with OpenAI Whisper
-subshift --video movie.mp4 --subs movie.srt
+subshift --media movie.mp4 --sub movie.srt
 
 # Use Google Speech-to-Text instead
-subshift --video movie.mp4 --subs movie.srt --api google
+subshift --media movie.mp4 --sub movie.srt --api google
 
 # Adjust similarity threshold (more/less strict)
-subshift --video movie.mp4 --subs movie.srt --similarity-threshold 0.8
+subshift --media movie.mp4 --sub movie.srt --similarity-threshold 0.8
 ```
 
 ### Advanced Options
 ```bash
-# More audio samples for better accuracy
-subshift --video movie.mp4 --subs movie.srt --samples 6
-
 # Larger search window for heavily edited content
-subshift --video movie.mp4 --subs movie.srt --search-window 30
+subshift --media movie.mp4 --sub movie.srt --search-window 30
 
 # Debug mode with detailed comparison output
-subshift --video movie.mp4 --subs movie.srt --debug
+subshift --media movie.mp4 --sub movie.srt --debug
+
+# Interactive curses UI with live progress
+subshift --media movie.mp4 --sub movie.srt --curses
 
 # Dry run (analysis only, no file changes)
-subshift --video movie.mp4 --subs movie.srt --dry-run
+subshift --media movie.mp4 --sub movie.srt --dry-run
 ```
 
 ### SDH (Sound Description) Removal
 ```bash
 # Estimate cost for SDH removal
-subshift --subs movie.srt --sdh-cost-estimate
+subshift --sub movie.srt --sdh-cost-estimate
 
 # Remove SDH with AI analysis (requires API key)
-subshift --video movie.mp4 --subs movie.srt --remove-sdh
+subshift --media movie.mp4 --sub movie.srt --remove-sdh
 
 # Combined sync + SDH removal
-subshift --video movie.mp4 --subs movie.srt --remove-sdh --debug
+subshift --media movie.mp4 --sub movie.srt --remove-sdh --debug
 ```
 
 ### 💰 Cost Analysis (SDH Removal)
