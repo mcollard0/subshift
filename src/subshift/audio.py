@@ -9,6 +9,7 @@ import ffmpeg
 import subprocess
 
 from .logging import get_logger
+import statistics
 
 
 class AudioSample:
@@ -88,7 +89,7 @@ class AudioProcessor:
         
         return duration;
     
-    def generate_sample_times( self, duration: float, num_samples: int = None, use_sliding_window: bool = True ) -> List[float]:
+    def generate_sample_times( self, duration: float, num_samples: int = None, use_sliding_window: bool = True, phase: str = "initial" ) -> List[float]:
         """
         Generate sample start times based on video duration using improved sampling strategy.
         
@@ -132,8 +133,15 @@ class AudioProcessor:
             self.logger.warning( "No valid sample positions found" );
             return [];
         
-        # Intelligent sample selection
-        max_samples = num_samples if num_samples else 20;  # Default to 20 for API efficiency
+        # Adaptive sample selection based on phase
+        if phase == "initial":
+            max_samples = num_samples if num_samples else 12;  # Start conservative
+        elif phase == "consistent":
+            max_samples = num_samples if num_samples else 8;   # Reduce for good sync
+        elif phase == "inconsistent":
+            max_samples = num_samples if num_samples else 35;  # Increase for bad sync
+        else:
+            max_samples = num_samples if num_samples else 20;  # Default fallback
         
         if len( all_positions ) <= max_samples:
             sample_times = all_positions;
@@ -316,3 +324,129 @@ class AudioProcessor:
                     self.logger.debug( f"Cleaned up {sample.file_path}" );
             except Exception as e:
                 self.logger.warning( f"Could not clean up {sample.file_path}: {e}" );
+
+
+class AdaptiveSamplingCoordinator:
+    """
+    Coordinates adaptive sampling based on timing consistency analysis.
+    
+    Strategy:
+    1. Initial Phase: Start with 12 samples for baseline assessment
+    2. Analyze timing consistency from initial results
+    3. Consistent timing (<2s variance): Reduce to 8 samples (cost optimization)
+    4. Inconsistent timing (>5s variance): Increase to 35+ samples (accuracy focus)
+    5. Moderate variance (2-5s): Use standard 20 samples
+    """
+    
+    def __init__( self, debug: bool = False ):
+        self.logger = get_logger( debug=debug );
+        self.timing_history = [];  # Store offset measurements for analysis
+        self.consistency_threshold_low = 2.0;   # Seconds - good consistency
+        self.consistency_threshold_high = 5.0;  # Seconds - poor consistency
+    
+    def analyze_timing_consistency( self, offset_points: List[float] ) -> str:
+        """
+        Analyze timing consistency from offset measurements.
+        
+        Args:
+            offset_points: List of timing offset measurements in seconds
+            
+        Returns:
+            String: "consistent", "inconsistent", or "moderate"
+        """
+        if len( offset_points ) < 3:
+            return "insufficient_data";
+        
+        # Calculate variance in timing offsets
+        mean_offset = statistics.mean( offset_points );
+        variance = statistics.variance( offset_points ) if len( offset_points ) > 1 else 0;
+        std_dev = statistics.stdev( offset_points ) if len( offset_points ) > 1 else 0;
+        
+        # Calculate range (max - min)
+        offset_range = max( offset_points ) - min( offset_points );
+        
+        self.logger.debug( f"Timing analysis: mean={mean_offset:.2f}s, std_dev={std_dev:.2f}s, range={offset_range:.2f}s" );
+        
+        # Store for historical analysis
+        self.timing_history.extend( offset_points );
+        
+        # Classify consistency
+        if std_dev <= self.consistency_threshold_low and offset_range <= 3.0:
+            return "consistent";      # Good sync, can reduce samples
+        elif std_dev >= self.consistency_threshold_high or offset_range >= 8.0:
+            return "inconsistent";    # Poor sync, need more samples
+        else:
+            return "moderate";        # Standard sampling
+    
+    def recommend_sample_count( self, consistency: str, current_success_rate: float = None ) -> int:
+        """
+        Recommend optimal sample count based on consistency analysis.
+        
+        Args:
+            consistency: Result from analyze_timing_consistency()
+            current_success_rate: Optional success rate from alignment (0.0-1.0)
+            
+        Returns:
+            Recommended number of samples
+        """
+        base_recommendations = {
+            "consistent": 8,     # Reduce cost, maintain quality
+            "moderate": 20,      # Standard sampling
+            "inconsistent": 35,  # Maximize accuracy
+            "insufficient_data": 12  # Conservative start
+        };
+        
+        recommended = base_recommendations.get( consistency, 20 );
+        
+        # Adjust based on success rate if available
+        if current_success_rate is not None:
+            if current_success_rate < 0.5:  # Very poor success
+                recommended = min( 40, int( recommended * 1.4 ) );  # Increase samples significantly
+            elif current_success_rate > 0.8:  # Very good success
+                recommended = max( 6, int( recommended * 0.8 ) );   # Reduce samples slightly
+        
+        self.logger.info( f"Adaptive sampling recommendation: {recommended} samples (consistency: {consistency})" );
+        return recommended;
+    
+    def should_resample( self, offset_points: List[float], current_samples: int ) -> bool:
+        """
+        Determine if additional resampling is needed based on results.
+        
+        Args:
+            offset_points: Current offset measurements
+            current_samples: Number of samples used
+            
+        Returns:
+            True if resampling recommended
+        """
+        if len( offset_points ) < 2:
+            return True;  # Need more data
+        
+        consistency = self.analyze_timing_consistency( offset_points );
+        recommended_samples = self.recommend_sample_count( consistency );
+        
+        # Resample if we need significantly more samples
+        if recommended_samples > current_samples * 1.5:
+            self.logger.info( f"Resampling recommended: {current_samples} -> {recommended_samples} samples" );
+            return True;
+        
+        return False;
+    
+    def get_cost_estimate( self, sample_count: int ) -> float:
+        """
+        Estimate OpenAI Whisper costs for given sample count.
+        
+        Args:
+            sample_count: Number of audio samples
+            
+        Returns:
+            Estimated cost in USD
+        """
+        # Multi-duration average: 70% × 1min + 20% × 0.5min + 10% × 1.5min = 0.95min avg
+        avg_duration_minutes = 0.95;
+        whisper_cost_per_minute = 0.006;
+        
+        total_audio_minutes = sample_count * avg_duration_minutes;
+        total_cost = total_audio_minutes * whisper_cost_per_minute;
+        
+        return total_cost;
