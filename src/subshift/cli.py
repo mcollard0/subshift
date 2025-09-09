@@ -101,6 +101,18 @@ class SubShiftCLI:
             help="Perform analysis without modifying subtitle file"
         );
         
+        parser.add_argument(
+            "--remove-sdh",
+            action="store_true",
+            help="Remove SDH (Sound Description for Hearing Impaired) content from subtitles"
+        );
+        
+        parser.add_argument(
+            "--sdh-cost-estimate",
+            action="store_true",
+            help="Show cost estimate for SDH removal and exit"
+        );
+        
         return parser;
     
     def _load_environment( self ):
@@ -192,6 +204,28 @@ def main():
     cli = SubShiftCLI();
     args = cli.parse_args();
     
+    # Handle SDH cost estimation
+    if args.sdh_cost_estimate:
+        from .sdh import SDHRemover;
+        
+        sdh_remover = SDHRemover( args.api, cli.get_api_key() );
+        cost_info = sdh_remover.estimate_cost( args.subs );
+        
+        if 'error' in cost_info:
+            cli.logger.error( f"Cost estimation failed: {cost_info['error']}" );
+            sys.exit( 1 );
+        
+        cli.logger.info( "\n=== SDH REMOVAL COST ESTIMATE ===" );
+        cli.logger.info( f"File: {args.subs}" );
+        cli.logger.info( f"Size: {cost_info['file_size_kb']} KB" );
+        cli.logger.info( f"Text lines: {cost_info['text_lines']}" );
+        cli.logger.info( f"Estimated AI chunks: {cost_info['estimated_chunks']}" );
+        cli.logger.info( f"Estimated tokens: {cost_info['estimated_tokens']:,}" );
+        cli.logger.info( f"Estimated cost: ${cost_info['estimated_cost_usd']:.4f} USD" );
+        cli.logger.info( f"Cost per 100KB: ${cost_info['cost_per_100kb']:.4f} USD" );
+        cli.logger.info( "\nNote: This is an estimate based on OpenAI GPT-4 Mini pricing." );
+        return;
+    
     # Import and run the main synchronization process
     from .sync import SubtitleSynchronizer;
     
@@ -206,7 +240,8 @@ def main():
         num_samples=args.samples,
         debug=args.debug,
         use_curses=args.curses,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        remove_sdh=args.remove_sdh
     );
     
     try:

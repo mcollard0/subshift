@@ -37,7 +37,8 @@ class SubtitleSynchronizer:
         num_samples: int = 4,
         debug: bool = False,
         use_curses: bool = False,
-        dry_run: bool = False
+        dry_run: bool = False,
+        remove_sdh: bool = False
     ):
         self.video_file = Path( video_file );
         self.subtitle_file = Path( subtitle_file );
@@ -50,6 +51,7 @@ class SubtitleSynchronizer:
         self.debug = debug;
         self.use_curses = use_curses;
         self.dry_run = dry_run;
+        self.remove_sdh = remove_sdh;
         
         self.logger = get_logger();
         
@@ -197,6 +199,26 @@ class SubtitleSynchronizer:
         
         return corrected_file;
     
+    def remove_sdh_content( self, subtitle_file: Path ) -> Path:
+        """Remove SDH (Sound Description for Hearing Impaired) content from subtitle file."""
+        self.logger.info( "=== STEP 7: SDH REMOVAL ===" );
+        
+        from .sdh import SDHRemover;
+        
+        sdh_remover = SDHRemover( self.api_engine, self.api_key );
+        
+        if not self.dry_run:
+            cleaned_file = sdh_remover.remove_sdh_from_file( 
+                subtitle_file,
+                use_ai=True  # Use AI analysis for better accuracy
+            );
+            self.logger.info( f"SDH removal completed. Cleaned file: {cleaned_file}" );
+            return cleaned_file;
+        else:
+            cost_info = sdh_remover.estimate_cost( subtitle_file );
+            self.logger.info( f"Dry run: SDH removal cost estimate: ${cost_info.get('estimated_cost_usd', 0):.4f}" );
+            return subtitle_file;
+    
     def cleanup( self ):
         """Clean up temporary files."""
         self.logger.debug( "Cleaning up temporary files" );
@@ -238,11 +260,18 @@ class SubtitleSynchronizer:
             # Step 6: Apply corrections to subtitle file
             corrected_file = self.apply_corrections();
             
+            # Step 7: Remove SDH if requested
+            final_file = corrected_file;
+            if self.remove_sdh:
+                final_file = self.remove_sdh_content( corrected_file );
+            
             # Success!
             self.logger.info( "\n=== SYNCHRONIZATION COMPLETE ===" );
             
             if not self.dry_run:
-                self.logger.info( f"✓ Corrected subtitles saved to: {corrected_file}" );
+                self.logger.info( f"✓ Final subtitles saved to: {final_file}" );
+                if self.remove_sdh:
+                    self.logger.info( f"✓ Synchronized subtitles: {corrected_file}" );
                 self.logger.info( f"✓ Original backed up to: backup/" );
             else:
                 self.logger.info( f"✓ Dry run completed - no files modified" );

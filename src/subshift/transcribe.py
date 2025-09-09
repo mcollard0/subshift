@@ -5,7 +5,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import openai
 import whisper
@@ -62,18 +62,62 @@ class TranscriptionEngine( ABC ):
         
         return text;
     
+    def classify_error( self, error: Exception ) -> Tuple[bool, str]:
+        """Classify error as transient or fatal.
+        
+        Returns:
+            Tuple of (is_transient, error_category)
+        """
+        error_str = str( error ).lower();
+        
+        # Transient errors (retryable)
+        transient_patterns = [
+            'timeout', 'rate limit', 'quota', 'network', 'connection',
+            'temporary', '429', '503', '502', '500', 'unavailable'
+        ];
+        
+        if any( pattern in error_str for pattern in transient_patterns ):
+            return True, "network/quota";
+        
+        # Fatal errors (not retryable)
+        fatal_patterns = [
+            'authentication', 'unauthorized', '401', '403', 'invalid api key',
+            'file not found', 'unsupported format', 'invalid audio'
+        ];
+        
+        if any( pattern in error_str for pattern in fatal_patterns ):
+            return False, "authentication/format";
+        
+        # Default to transient for unknown errors
+        return True, "unknown";
+    
     def retry_with_backoff( self, func, max_retries: int = 3 ):
-        """Execute function with exponential backoff retry."""
+        """Execute function with exponential backoff retry and error classification."""
+        last_error = None;
+        
         for attempt in range( max_retries ):
             try:
                 return func();
             except Exception as e:
-                if attempt == max_retries - 1:
+                last_error = e;
+                is_transient, error_category = self.classify_error( e );
+                
+                # Don't retry fatal errors
+                if not is_transient:
+                    self.logger.error( f"Fatal {error_category} error, not retrying: {e}" );
                     raise e;
                 
-                wait_time = 2 ** attempt;
-                self.logger.warning( f"Attempt {attempt + 1} failed, retrying in {wait_time}s: {e}" );
+                # Don't retry on last attempt
+                if attempt == max_retries - 1:
+                    self.logger.error( f"Max retries exceeded for {error_category} error: {e}" );
+                    raise e;
+                
+                wait_time = ( 2 ** attempt ) + ( time.time() % 1 );  # Add jitter
+                self.logger.warning( f"Transient {error_category} error (attempt {attempt + 1}/{max_retries}), retrying in {wait_time:.1f}s: {e}" );
                 time.sleep( wait_time );
+        
+        # Shouldn't reach here, but just in case
+        raise last_error;
 
 
 class WhisperEngine( TranscriptionEngine ):
