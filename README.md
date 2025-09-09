@@ -19,6 +19,13 @@ subshift --video path/to/video.mp4 --subs path/to/subs.srt
 ## Design
 See docs/design.md
 
+## TODO (Future Work)
+- Strip SDH descriptions with AI
+- Binary subtitle support (.ass, .sub, etc)
+- Batch processing for multiple files
+- Web dashboard interface
+- Media server integration (Plex, Jellyfin)
+
 ## Related
-- gridshift: https://github.com/USERNAME/gridshift
+- gridshift: https://github.com/USERNAME/gridshift - Automated media download manager
 
