@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from .audio import AudioProcessor, AudioSample
+from .audio import AudioProcessor, AudioSample, AdaptiveSamplingCoordinator
 from .transcribe import create_transcription_engine, TranscriptionEngine
 from .subtitles import SubtitleProcessor
 from .align import AlignmentEngine, AlignmentMatch
@@ -66,24 +66,38 @@ class SubtitleSynchronizer:
             min_chars=min_chars
         );
         self.offset_calculator = OffsetCalculator();
+        self.adaptive_sampling = AdaptiveSamplingCoordinator( debug=debug );
         
         # Results storage
         self.audio_samples: List[AudioSample] = [];
         self.alignment_matches: List[AlignmentMatch] = [];
+        self.current_phase = "initial";  # Track sampling phase
     
     def extract_audio_samples( self ) -> List[AudioSample]:
-        """Extract audio samples from video file."""
-        self.logger.info( "=== STEP 1: AUDIO EXTRACTION ===" );
+        """Extract audio samples from video file using adaptive sampling."""
+        self.logger.info( "=== STEP 1: AUDIO EXTRACTION (ADAPTIVE) ===" );
+        
+        # Use adaptive sampling if no specific sample count requested
+        if self.samples <= 4:  # Default or low sample count - use adaptive
+            # Start with initial phase sampling
+            recommended_samples = 12 if self.current_phase == "initial" else self.samples;
+            self.logger.info( f"Adaptive sampling: {self.current_phase} phase, {recommended_samples} samples" );
+        else:
+            # User specified sample count - respect it
+            recommended_samples = self.samples;
+            self.logger.info( f"User-specified sampling: {recommended_samples} samples" );
         
         self.audio_samples = self.audio_processor.extract_audio_samples( 
             self.video_file, 
-            num_samples=self.samples
+            num_samples=recommended_samples
         );
         
         if not self.audio_samples:
             raise RuntimeError( "Failed to extract any audio samples" );
         
-        self.logger.info( f"Successfully extracted {len( self.audio_samples )} audio samples" );
+        # Log cost estimate for transparency
+        cost = self.adaptive_sampling.get_cost_estimate( len( self.audio_samples ) );
+        self.logger.info( f"Successfully extracted {len( self.audio_samples )} audio samples (est. cost: ${cost:.3f})" );
         return self.audio_samples;
     
     def transcribe_audio_samples( self ) -> List[AudioSample]:
@@ -169,7 +183,7 @@ class SubtitleSynchronizer:
     
     def calculate_offsets( self ) -> List:
         """Calculate time offsets from alignment matches."""
-        self.logger.info( "=== STEP 5: OFFSET CALCULATION ===" );
+        self.logger.info( "=== STEP 5: OFFSET CALCULATION & ADAPTIVE ANALYSIS ===" );
         
         if not self.alignment_matches:
             raise RuntimeError( "No alignment matches available. Run align_transcripts first." );
@@ -179,6 +193,41 @@ class SubtitleSynchronizer:
         
         if not offsets:
             raise RuntimeError( "No successful matches found for offset calculation" );
+        
+        # Adaptive analysis: Check if we need different sampling strategy
+        if self.samples <= 4 and len( offsets ) >= 3:  # Only for adaptive mode with sufficient data
+            offset_values = [ abs( offset.offset_seconds ) for offset in offsets ];
+            success_rate = len( [ match for match in self.alignment_matches if match.is_match ] ) / len( self.alignment_matches );
+            
+            # Analyze timing consistency
+            consistency = self.adaptive_sampling.analyze_timing_consistency( offset_values );
+            recommended_samples = self.adaptive_sampling.recommend_sample_count( consistency, success_rate );
+            current_samples = len( self.audio_samples );
+            
+            self.logger.info( f"\n=== ADAPTIVE SAMPLING ANALYSIS ===" );
+            self.logger.info( f"Timing consistency: {consistency}" );
+            self.logger.info( f"Success rate: {success_rate:.1%}" );
+            self.logger.info( f"Current samples: {current_samples}, Recommended: {recommended_samples}" );
+            
+            # Log cost implications
+            current_cost = self.adaptive_sampling.get_cost_estimate( current_samples );
+            recommended_cost = self.adaptive_sampling.get_cost_estimate( recommended_samples );
+            cost_diff = recommended_cost - current_cost;
+            
+            if cost_diff > 0.01:  # Significant cost difference
+                self.logger.info( f"Cost impact: ${current_cost:.3f} -> ${recommended_cost:.3f} (+${cost_diff:.3f})" );
+            elif cost_diff < -0.01:
+                self.logger.info( f"Cost savings: ${current_cost:.3f} -> ${recommended_cost:.3f} (${abs(cost_diff):.3f} saved)" );
+            
+            # Update phase for future runs (learning)
+            if consistency == "consistent":
+                self.current_phase = "consistent";
+            elif consistency == "inconsistent":
+                self.current_phase = "inconsistent";
+            else:
+                self.current_phase = "moderate";
+            
+            self.logger.info( f"Next run will use '{self.current_phase}' sampling strategy" );
         
         # Display offset summary
         self.offset_calculator.display_offset_summary();
