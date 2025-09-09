@@ -27,5 +27,5 @@ See docs/design.md
 - Media server integration (Plex, Jellyfin)
 
 ## Related
-- gridshift: https://github.com/USERNAME/gridshift - Automated media download manager
+- gridshift: https://github.com/mcollard0/gridshift - Automated media download manager
 
