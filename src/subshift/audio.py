@@ -43,7 +43,8 @@ class AudioProcessor:
         # Audio extraction settings
         self.sample_rate = 16000;  # 16kHz for AI compatibility
         self.channels = 1;         # Mono
-        self.sample_duration = 60; # 1 minute per sample
+        self.sample_durations = [ 30, 60, 90 ];  # Multi-duration sampling for better coverage
+        self.primary_duration = 60; # Primary duration for most samples
     
     def get_video_duration( self, video_file: Path ) -> Optional[float]:
         """
@@ -87,31 +88,43 @@ class AudioProcessor:
         
         return duration;
     
-    def generate_sample_times( self, duration: float, num_samples: int = None ) -> List[float]:
+    def generate_sample_times( self, duration: float, num_samples: int = None, use_sliding_window: bool = True ) -> List[float]:
         """
-        Generate sample start times based on video duration.
+        Generate sample start times based on video duration using improved sampling strategy.
         
-        Strategy:
-        - Take one sample every 5 minutes starting from 5:00
-        - If more than 15 samples available, randomly select 15
+        Enhanced Strategy:
+        - Use sliding window sampling for better dialogue coverage
+        - Primary samples every 2.5 minutes for dense coverage  
+        - Skip first 3 minutes (credits/intro) and last 5 minutes (credits/outro)
         - Each sample is 1 minute long
-        - num_samples parameter is ignored (kept for compatibility)
+        - Intelligently limit to ~20 samples for API efficiency
         
         Args:
             duration: Video duration in seconds
-            num_samples: Ignored (kept for backward compatibility)
+            num_samples: Maximum samples to extract (default: auto-calculated)
+            use_sliding_window: Use overlapping samples for better coverage
             
         Returns:
             List of start times in seconds
         """
-        sample_interval = 5 * 60;  # 5 minutes
-        start_offset = 5 * 60;     # Start at 5:00 minutes
+        if use_sliding_window:
+            # Enhanced sliding window strategy
+            sample_interval = 2.5 * 60;  # 2.5 minutes for dense coverage
+            start_offset = 3 * 60;       # Start at 3:00 (skip intro)
+            end_buffer = 5 * 60;         # Skip last 5 minutes (credits)
+        else:
+            # Legacy strategy for compatibility
+            sample_interval = 5 * 60;
+            start_offset = 5 * 60;
+            end_buffer = 0;
         
-        # Generate all possible sample positions every 5 minutes
+        effective_duration = duration - end_buffer;
+        
+        # Generate all possible sample positions
         all_positions = [];
         current_pos = start_offset;
         
-        while current_pos + self.sample_duration < duration:
+        while current_pos + self.primary_duration < effective_duration:
             all_positions.append( current_pos );
             current_pos += sample_interval;
         
@@ -119,38 +132,55 @@ class AudioProcessor:
             self.logger.warning( "No valid sample positions found" );
             return [];
         
-        # If more than 15 samples, randomly select 15
-        if len( all_positions ) > 15:
-            sample_times = random.sample( all_positions, 15 );
-            self.logger.info( f"Video has {len( all_positions )} possible samples, randomly selected 15" );
-        else:
+        # Intelligent sample selection
+        max_samples = num_samples if num_samples else 20;  # Default to 20 for API efficiency
+        
+        if len( all_positions ) <= max_samples:
             sample_times = all_positions;
             self.logger.info( f"Using all {len( sample_times )} available samples" );
+        else:
+            # For longer videos, use strategic selection:
+            # - Ensure good coverage across the entire duration
+            # - Prefer samples from dialogue-heavy middle sections
+            step = len( all_positions ) / max_samples;
+            sample_times = [];
+            
+            for i in range( max_samples ):
+                index = int( i * step );
+                if index < len( all_positions ):
+                    sample_times.append( all_positions[index] );
+            
+            self.logger.info( f"Video has {len( all_positions )} possible samples, selected {len( sample_times )} strategically" );
         
         sample_times.sort();  # Sort for consistent processing
         
-        self.logger.info( f"Sample times (minutes): {[ t/60 for t in sample_times ]}" );
+        interval_desc = "sliding window (2.5m)" if use_sliding_window else "fixed interval (5m)";
+        self.logger.info( f"Sample times ({interval_desc}): {[ round( t/60, 1 ) for t in sample_times ]}" );
         return sample_times;
     
-    def extract_audio_sample( self, video_file: Path, start_time: float, index: int ) -> Optional[AudioSample]:
+    def extract_audio_sample( self, video_file: Path, start_time: float, index: int, duration: int = None ) -> Optional[AudioSample]:
         """
-        Extract a single audio sample from video file.
+        Extract a single audio sample from video file with adaptive duration.
         
         Args:
             video_file: Path to input video
             start_time: Start time in seconds
             index: Sample index for naming
+            duration: Sample duration in seconds (default: primary_duration)
             
         Returns:
             AudioSample object or None if extraction fails
         """
-        output_file = self.temp_dir / f"sample_{index:03d}_{int( start_time )}.wav";
+        if duration is None:
+            duration = self.primary_duration;
+        
+        output_file = self.temp_dir / f"sample_{index:03d}_{int( start_time )}_{duration}s.wav";
         
         try:
-            self.logger.debug( f"Extracting sample {index} from {start_time}s to {output_file}" );
+            self.logger.debug( f"Extracting sample {index} from {start_time}s ({duration}s duration) to {output_file}" );
             
             # FFmpeg command: extract audio segment with specific format
-            stream = ffmpeg.input( str( video_file ), ss=start_time, t=self.sample_duration );
+            stream = ffmpeg.input( str( video_file ), ss=start_time, t=duration );
             stream = ffmpeg.output(
                 stream,
                 str( output_file ),
@@ -165,7 +195,8 @@ class AudioProcessor:
             # Verify extraction succeeded
             if output_file.exists() and output_file.stat().st_size > 0:
                 sample = AudioSample( index, start_time, output_file );
-                self.logger.debug( f"Successfully extracted {sample}" );
+                sample.duration = duration;  # Store duration for reference
+                self.logger.debug( f"Successfully extracted {duration}s sample: {sample}" );
                 return sample;
             else:
                 self.logger.error( f"Audio extraction failed for sample {index}" );
@@ -177,6 +208,48 @@ class AudioProcessor:
         except Exception as e:
             self.logger.error( f"Unexpected error extracting sample {index}: {e}" );
             return None;
+    
+    def extract_multi_duration_samples( self, video_file: Path, sample_times: List[float], max_samples: int = 20 ) -> List[AudioSample]:
+        """
+        Extract samples with multiple durations for comprehensive coverage.
+        
+        Strategy:
+        - 70% of samples: 60s (standard duration)
+        - 20% of samples: 30s (catch quick dialogue)
+        - 10% of samples: 90s (full context for complex scenes)
+        
+        Args:
+            video_file: Path to input video file
+            sample_times: List of sample start times
+            max_samples: Maximum number of samples to extract
+            
+        Returns:
+            List of successfully extracted AudioSample objects
+        """
+        samples = [];
+        total_samples = min( len( sample_times ), max_samples );
+        
+        # Calculate distribution
+        standard_count = int( total_samples * 0.7 );  # 70% standard (60s)
+        short_count = int( total_samples * 0.2 );     # 20% short (30s)
+        long_count = total_samples - standard_count - short_count;  # Rest long (90s)
+        
+        self.logger.info( f"Multi-duration extraction plan: {standard_count}×60s, {short_count}×30s, {long_count}×90s" );
+        
+        for i, start_time in enumerate( sample_times[:total_samples] ):
+            # Determine duration based on distribution
+            if i < standard_count:
+                duration = 60;  # Standard
+            elif i < standard_count + short_count:
+                duration = 30;  # Short
+            else:
+                duration = 90;  # Long
+            
+            sample = self.extract_audio_sample( video_file, start_time, i, duration );
+            if sample:
+                samples.append( sample );
+        
+        return samples;
     
     def extract_audio_samples( self, video_file: Path, num_samples: int = None ) -> List[AudioSample]:
         """
@@ -198,21 +271,20 @@ class AudioProcessor:
         if duration is None:
             duration = self.estimate_duration_from_filename( video_file );
         
-        # Generate sample times (every 5 minutes, max 15)
-        sample_times = self.generate_sample_times( duration );
+        # Generate sample times using sliding window strategy
+        sample_times = self.generate_sample_times( duration, num_samples );
         if not sample_times:
             self.logger.error( "No sample times generated" );
             return [];
         
-        # Extract samples with retry logic
-        samples = [];
-        failed_indices = [];
+        # Extract samples using multi-duration strategy for better coverage
+        max_samples = num_samples if num_samples else 20;
+        samples = self.extract_multi_duration_samples( video_file, sample_times, max_samples );
         
-        for i, start_time in enumerate( sample_times ):
-            sample = self.extract_audio_sample( video_file, start_time, i );
-            if sample:
-                samples.append( sample );
-            else:
+        # Identify failed extractions for potential retry
+        failed_indices = [];
+        for i, start_time in enumerate( sample_times[:max_samples] ):
+            if i >= len( samples ) or not samples[i] or samples[i].start_timestamp != start_time:
                 failed_indices.append( i );
         
         # Retry failed extractions once with different random times

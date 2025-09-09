@@ -4,6 +4,8 @@ Alignment algorithm for matching AI transcripts with subtitle text using Levensh
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 import Levenshtein
+import re
+from collections import Counter
 
 from .audio import AudioSample
 from .subtitles import SubtitleProcessor
@@ -46,7 +48,7 @@ class AlignmentEngine:
     
     def calculate_levenshtein_similarity( self, text1: str, text2: str ) -> Tuple[int, float]:
         """
-        Calculate Levenshtein distance and similarity score.
+        Calculate basic Levenshtein distance and similarity score.
         
         Args:
             text1: First text string
@@ -67,6 +69,94 @@ class AlignmentEngine:
         
         similarity = 1.0 - ( distance / max_length );
         return distance, similarity;
+    
+    def calculate_weighted_similarity( self, audio_text: str, subtitle_text: str, audio_timestamp: float, subtitle_minute: int ) -> Tuple[int, float]:
+        """
+        Calculate weighted similarity score using multiple factors for better accuracy.
+        
+        Factors:
+        1. Levenshtein distance (base score)
+        2. Word overlap bonus
+        3. Sentence structure similarity
+        4. Dialogue vs music detection
+        5. Timing proximity bonus
+        
+        Args:
+            audio_text: AI transcribed text
+            subtitle_text: Subtitle text
+            audio_timestamp: Audio sample timestamp (seconds)
+            subtitle_minute: Subtitle minute
+            
+        Returns:
+            Tuple of (levenshtein_distance, weighted_similarity_score)
+        """
+        if not audio_text or not subtitle_text:
+            return float( 'inf' ), 0.0;
+        
+        # Base Levenshtein similarity
+        distance, base_similarity = self.calculate_levenshtein_similarity( audio_text, subtitle_text );
+        
+        # Factor 1: Word overlap bonus (important words matching)
+        audio_words = set( audio_text.lower().split() );
+        subtitle_words = set( subtitle_text.lower().split() );
+        
+        # Filter out common words that don't add meaning
+        stopwords = { 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that', 'these', 'those' };
+        meaningful_audio = audio_words - stopwords;
+        meaningful_subtitle = subtitle_words - stopwords;
+        
+        if meaningful_audio and meaningful_subtitle:
+            word_overlap = len( meaningful_audio & meaningful_subtitle ) / len( meaningful_audio | meaningful_subtitle );
+            word_bonus = word_overlap * 0.15;  # Up to 15% bonus for good word overlap
+        else:
+            word_bonus = 0.0;
+        
+        # Factor 2: Sentence structure similarity (punctuation patterns, length)
+        audio_sentences = len( re.split( r'[.!?]+', audio_text ) );
+        subtitle_sentences = len( re.split( r'[.!?]+', subtitle_text ) );
+        
+        if max( audio_sentences, subtitle_sentences ) > 0:
+            structure_similarity = 1.0 - abs( audio_sentences - subtitle_sentences ) / max( audio_sentences, subtitle_sentences );
+            structure_bonus = structure_similarity * 0.05;  # Up to 5% bonus for similar structure
+        else:
+            structure_bonus = 0.0;
+        
+        # Factor 3: Content type detection (dialogue vs music/effects)
+        music_indicators = { 'music', 'song', 'singing', 'melody', 'tune', 'beat', 'rhythm', 'instrumental' };
+        dialogue_indicators = { 'said', 'told', 'asked', 'replied', 'answered', 'explained', 'whispered', 'shouted', 'called' };
+        
+        audio_music_score = len( meaningful_audio & music_indicators ) / max( len( meaningful_audio ), 1 );
+        subtitle_music_score = len( meaningful_subtitle & music_indicators ) / max( len( meaningful_subtitle ), 1 );
+        audio_dialogue_score = len( meaningful_audio & dialogue_indicators ) / max( len( meaningful_audio ), 1 );
+        subtitle_dialogue_score = len( meaningful_subtitle & dialogue_indicators ) / max( len( meaningful_subtitle ), 1 );
+        
+        # Bonus if both are same type (both music or both dialogue)
+        if ( audio_music_score > 0.1 and subtitle_music_score > 0.1 ) or ( audio_dialogue_score > 0.1 and subtitle_dialogue_score > 0.1 ):
+            content_bonus = 0.08;  # 8% bonus for matching content type
+        else:
+            content_bonus = 0.0;
+        
+        # Factor 4: Timing proximity bonus
+        expected_subtitle_time = subtitle_minute * 60;
+        time_diff = abs( audio_timestamp - expected_subtitle_time );
+        max_time_diff = self.search_window * 60;  # Convert search window to seconds
+        
+        if max_time_diff > 0:
+            timing_proximity = 1.0 - ( time_diff / max_time_diff );
+            timing_bonus = max( 0, timing_proximity * 0.1 );  # Up to 10% bonus for close timing
+        else:
+            timing_bonus = 0.0;
+        
+        # Calculate weighted similarity
+        weighted_similarity = min( 1.0, base_similarity + word_bonus + structure_bonus + content_bonus + timing_bonus );
+        
+        # Debug logging for significant adjustments
+        total_bonus = word_bonus + structure_bonus + content_bonus + timing_bonus;
+        if total_bonus > 0.1:  # Significant bonus
+            self.logger.debug( f"Similarity boost: {base_similarity:.3f} -> {weighted_similarity:.3f} " \
+                             f"(word:{word_bonus:.3f}, struct:{structure_bonus:.3f}, content:{content_bonus:.3f}, timing:{timing_bonus:.3f})" );
+        
+        return distance, weighted_similarity;
     
     def find_best_match( self, audio_sample: AudioSample, subtitle_processor: SubtitleProcessor ) -> Optional[AlignmentMatch]:
         """
@@ -110,10 +200,12 @@ class AlignmentEngine:
             if len( subtitle_text ) < self.min_chars:
                 continue;
             
-            # Calculate similarity
-            distance, similarity = self.calculate_levenshtein_similarity(
+            # Calculate weighted similarity for better accuracy
+            distance, similarity = self.calculate_weighted_similarity(
                 audio_sample.transcription.lower(),
-                subtitle_text.lower()
+                subtitle_text.lower(),
+                audio_sample.start_timestamp,
+                minute
             );
             
             # Check if this is a passing match

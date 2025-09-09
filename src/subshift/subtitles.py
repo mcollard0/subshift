@@ -3,7 +3,10 @@ Subtitle processing module for parsing, normalizing, and indexing SRT files.
 """
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass
+import html
+import string
 import pysrt
 
 from .logging import get_logger
@@ -66,7 +69,7 @@ class SubtitleProcessor:
     
     def clean_subtitle_text( self, text: str ) -> str:
         """
-        Clean subtitle text by removing HTML, WebVTT tags, and artifacts.
+        Enhanced subtitle text cleaning for better alignment accuracy.
         
         Args:
             text: Raw subtitle text
@@ -77,33 +80,69 @@ class SubtitleProcessor:
         if not text:
             return "";
         
-        # Remove HTML tags
-        text = re.sub( r'<[^>]+>', '', text );
+        original_text = text;
         
-        # Remove WebVTT styling
+        # Decode HTML entities
+        text = html.unescape( text );
+        
+        # Remove HTML/XML tags (more comprehensive)
+        text = re.sub( r'<[^>]*>', '', text );
+        
+        # Remove WebVTT and styling tags
         text = re.sub( r'<c\.[^>]*>', '', text );
         text = re.sub( r'</c>', '', text );
+        text = re.sub( r'{[^}]*}', '', text );  # {style} tags
         
-        # Remove bracketed descriptions
-        text = re.sub( r'\[([^\]]+)\]', '', text );  # [music], [door slams]
-        text = re.sub( r'\(([^)]+)\)', '', text );   # (laughter), (whispers)
+        # Handle italics and formatting more intelligently
+        # Convert <i>text</i> to just text (keep content)
+        text = re.sub( r'<i>([^<]*)</i>', r'\1', text );
+        text = re.sub( r'<b>([^<]*)</b>', r'\1', text );
+        text = re.sub( r'<u>([^<]*)</u>', r'\1', text );
         
-        # Remove speaker labels (NAME:)
-        text = re.sub( r'^[A-Z][A-Z\s]*:', '', text );
+        # Remove sound effects and descriptions but preserve some context
+        # [music] -> (music context preserved as single space)
+        text = re.sub( r'\[([^\]]+)\]', ' ', text );
+        text = re.sub( r'\(([^)]+)\)', ' ', text );
+        text = re.sub( r'\{([^}]+)\}', ' ', text );
         
-        # Remove common subtitle symbols
-        text = re.sub( r'[♪♫★►▼→←↑↓]', '', text );
+        # Handle speaker labels more intelligently
+        # "JOHN: Hello there" -> "Hello there" (keep dialogue)
+        text = re.sub( r'^[A-Z][A-Z\s]*:\s*', '', text, flags=re.MULTILINE );
         
-        # Remove multiple punctuation
-        text = re.sub( r'[.]{2,}', '.', text );
-        text = re.sub( r'[-]{2,}', '-', text );
+        # Handle music notation while preserving lyrics
+        # "♪ song lyrics ♪" -> "song lyrics"
+        text = re.sub( r'[♪♫★►▼→←↑↓#]+\s*([^♪♫★►▼→←↑↓#]*?)\s*[♪♫★►▼→←↑↓#]+', r'\1', text );
+        text = re.sub( r'[♪♫★►▼→←↑↓#]+', ' ', text );  # Remove remaining symbols
         
-        # Clean up whitespace
+        # Normalize contractions for better matching
+        contractions = {
+            "won't": "will not", "can't": "cannot", "n't": " not",
+            "'re": " are", "'ve": " have", "'ll": " will", "'d": " would",
+            "'m": " am", "'s": " is"  # Note: 's could be possessive, but context matters
+        };
+        for contraction, expansion in contractions.items():
+            text = text.replace( contraction, expansion );
+        
+        # Normalize punctuation
+        text = re.sub( r'[.]{2,}', '.', text );  # Multiple periods
+        text = re.sub( r'[-]{2,}', '-', text );  # Multiple dashes
+        text = re.sub( r'[!]{2,}', '!', text );  # Multiple exclamations
+        text = re.sub( r'[?]{2,}', '?', text );  # Multiple questions
+        
+        # Remove most punctuation for alignment (keep word boundaries)
+        # This helps when OpenAI Whisper doesn't include punctuation
+        text = re.sub( r'[^\w\s]', ' ', text );
+        
+        # Normalize whitespace
         text = re.sub( r'\s+', ' ', text );
         text = text.strip();
         
         # Convert to lowercase for case-insensitive comparison
         text = text.lower();
+        
+        # Log significant cleaning for debugging
+        if len( original_text ) > len( text ) + 20:  # Significant reduction
+            self.logger.debug( f"Significant text cleaning: '{original_text[:50]}...' -> '{text[:50]}...'" );
         
         return text;
     
