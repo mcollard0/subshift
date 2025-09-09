@@ -1,0 +1,21 @@
+# Core dependencies
+ffmpeg-python>=0.2.0
+python-Levenshtein>=0.25.0
+openai-whisper>=20231117
+google-cloud-speech>=2.21.0
+python-dotenv>=1.0.0
+pysrt>=1.1.2
+
+# UI and display
+rich>=13.7.0
+tqdm>=4.66.0
+blessed>=1.20.0
+
+# Testing and development
+pytest>=7.4.0
+pytest-mock>=3.11.0
+pytest-cov>=4.1.0
+
+# Utilities
+requests>=2.31.0
+click>=8.1.0

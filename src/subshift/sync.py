@@ -1,0 +1,270 @@
+"""
+Main subtitle synchronization controller that orchestrates the entire process.
+"""
+from pathlib import Path
+from typing import List, Optional
+
+from .audio import AudioProcessor, AudioSample
+from .transcribe import create_transcription_engine, TranscriptionEngine
+from .subtitles import SubtitleProcessor
+from .align import AlignmentEngine, AlignmentMatch
+from .offset import OffsetCalculator
+from .logging import get_logger
+
+
+class SubtitleSynchronizer:
+    """
+    Main controller for subtitle synchronization process.
+    
+    Orchestrates:
+    1. Audio extraction and sampling
+    2. AI transcription
+    3. Subtitle parsing and indexing
+    4. Text alignment using Levenshtein distance
+    5. Offset calculation and interpolation
+    6. Subtitle correction and backup
+    """
+    
+    def __init__( 
+        self, 
+        video_file: Path,
+        subtitle_file: Path,
+        api_engine: str = "openai",
+        api_key: str = "",
+        search_window: int = 20,
+        similarity_threshold: float = 0.7,
+        min_chars: int = 40,
+        num_samples: int = 4,
+        debug: bool = False,
+        use_curses: bool = False,
+        dry_run: bool = False
+    ):
+        self.video_file = Path( video_file );
+        self.subtitle_file = Path( subtitle_file );
+        self.api_engine = api_engine;
+        self.api_key = api_key;
+        self.search_window = search_window;
+        self.similarity_threshold = similarity_threshold;
+        self.min_chars = min_chars;
+        self.num_samples = num_samples;
+        self.debug = debug;
+        self.use_curses = use_curses;
+        self.dry_run = dry_run;
+        
+        self.logger = get_logger();
+        
+        # Initialize components
+        self.audio_processor = AudioProcessor();
+        self.transcription_engine = create_transcription_engine( api_engine, api_key );
+        self.subtitle_processor = SubtitleProcessor( min_chars=min_chars );
+        self.alignment_engine = AlignmentEngine( 
+            similarity_threshold=similarity_threshold,
+            search_window=search_window,
+            min_chars=min_chars
+        );
+        self.offset_calculator = OffsetCalculator();
+        
+        # Results storage
+        self.audio_samples: List[AudioSample] = [];
+        self.alignment_matches: List[AlignmentMatch] = [];
+    
+    def extract_audio_samples( self ) -> List[AudioSample]:
+        """Extract audio samples from video file."""
+        self.logger.info( "=== STEP 1: AUDIO EXTRACTION ===" );
+        
+        self.audio_samples = self.audio_processor.extract_audio_samples( 
+            self.video_file,
+            self.num_samples
+        );
+        
+        if not self.audio_samples:
+            raise RuntimeError( "Failed to extract any audio samples" );
+        
+        self.logger.info( f"Successfully extracted {len( self.audio_samples )} audio samples" );
+        return self.audio_samples;
+    
+    def transcribe_audio_samples( self ) -> List[AudioSample]:
+        """Transcribe audio samples using AI."""
+        self.logger.info( "=== STEP 2: AI TRANSCRIPTION ===" );
+        
+        if not self.audio_samples:
+            raise RuntimeError( "No audio samples to transcribe. Run extract_audio_samples first." );
+        
+        transcribed_count = 0;
+        
+        for sample in self.audio_samples:
+            try:
+                sample.transcription = self.transcription_engine.transcribe( sample );
+                if sample.transcription:
+                    transcribed_count += 1;
+                    self.logger.debug( f"Sample {sample.index} transcribed: " \
+                                     f"'{sample.transcription[:50]}...'" );
+                else:
+                    self.logger.warning( f"Sample {sample.index} transcription failed" );
+                    
+            except Exception as e:
+                self.logger.error( f"Transcription failed for sample {sample.index}: {e}" );
+        
+        if transcribed_count == 0:
+            raise RuntimeError( "Failed to transcribe any audio samples" );
+        
+        self.logger.info( f"Successfully transcribed {transcribed_count}/{len( self.audio_samples )} samples" );
+        return self.audio_samples;
+    
+    def parse_subtitles( self ) -> SubtitleProcessor:
+        """Parse and index subtitle file."""
+        self.logger.info( "=== STEP 3: SUBTITLE PROCESSING ===" );
+        
+        # Parse subtitle file
+        subtitle_entries = self.subtitle_processor.parse_subtitle_file( self.subtitle_file );
+        if not subtitle_entries:
+            raise RuntimeError( "Failed to parse subtitle file" );
+        
+        # Create minute-based index
+        self.subtitle_processor.create_minute_index();
+        
+        # Display stats
+        stats = self.subtitle_processor.get_subtitle_stats();
+        self.logger.info( f"Parsed {stats['total_entries']} subtitles " \
+                         f"({stats['duration_minutes']:.1f} minutes)" );
+        self.logger.info( f"Found {stats['valid_minutes']} minutes with ≥{self.min_chars} characters" );
+        
+        return self.subtitle_processor;
+    
+    def align_transcripts( self ) -> List[AlignmentMatch]:
+        """Align AI transcripts with subtitle text."""
+        self.logger.info( "=== STEP 4: TEXT ALIGNMENT ===" );
+        
+        if not self.audio_samples or not self.subtitle_processor.subtitle_entries:
+            raise RuntimeError( "Missing audio samples or subtitles. Run previous steps first." );
+        
+        # Filter samples with transcriptions
+        transcribed_samples = [ sample for sample in self.audio_samples if sample.transcription ];
+        
+        if not transcribed_samples:
+            raise RuntimeError( "No transcribed audio samples available for alignment" );
+        
+        # Perform alignment
+        self.alignment_matches = self.alignment_engine.align_samples( 
+            transcribed_samples, 
+            self.subtitle_processor 
+        );
+        
+        # Display results
+        if self.debug:
+            self.alignment_engine.display_matches( self.alignment_matches, debug=True );
+        
+        # Check for successful matches
+        successful_matches = self.alignment_engine.get_successful_matches( self.alignment_matches );
+        if not successful_matches:
+            self.logger.warning( "No successful alignments found. Consider:" );
+            self.logger.warning( f"- Lowering similarity threshold (current: {self.similarity_threshold:.1%})" );
+            self.logger.warning( f"- Increasing search window (current: {self.search_window}m)" );
+            self.logger.warning( f"- Checking video/subtitle sync quality" );
+            
+        return self.alignment_matches;
+    
+    def calculate_offsets( self ) -> List:
+        """Calculate time offsets from alignment matches."""
+        self.logger.info( "=== STEP 5: OFFSET CALCULATION ===" );
+        
+        if not self.alignment_matches:
+            raise RuntimeError( "No alignment matches available. Run align_transcripts first." );
+        
+        # Calculate offsets from successful matches
+        offsets = self.offset_calculator.calculate_sample_offsets( self.alignment_matches );
+        
+        if not offsets:
+            raise RuntimeError( "No successful matches found for offset calculation" );
+        
+        # Display offset summary
+        self.offset_calculator.display_offset_summary();
+        
+        return offsets;
+    
+    def apply_corrections( self ) -> Path:
+        """Apply calculated corrections to subtitle file."""
+        self.logger.info( "=== STEP 6: SUBTITLE CORRECTION ===" );
+        
+        if not self.offset_calculator.offsets:
+            raise RuntimeError( "No offsets calculated. Run calculate_offsets first." );
+        
+        # Apply corrections and save
+        corrected_file = self.offset_calculator.apply_corrections( 
+            self.subtitle_file,
+            dry_run=self.dry_run
+        );
+        
+        return corrected_file;
+    
+    def cleanup( self ):
+        """Clean up temporary files."""
+        self.logger.debug( "Cleaning up temporary files" );
+        
+        if self.audio_samples:
+            self.audio_processor.cleanup_samples( self.audio_samples );
+    
+    def run( self ) -> bool:
+        """
+        Run the complete subtitle synchronization process.
+        
+        Returns:
+            True if successful, False if failed
+        """
+        try:
+            self.logger.info( "Starting SubShift subtitle synchronization" );
+            self.logger.info( f"Video: {self.video_file}" );
+            self.logger.info( f"Subtitles: {self.subtitle_file}" );
+            self.logger.info( f"Engine: {self.api_engine}" );
+            self.logger.info( f"Samples: {self.num_samples}" );
+            self.logger.info( f"Similarity threshold: {self.similarity_threshold:.1%}" );
+            self.logger.info( f"Search window: {self.search_window} minutes" );
+            
+            # Step 1: Extract audio samples
+            self.extract_audio_samples();
+            
+            # Step 2: Transcribe audio using AI
+            self.transcribe_audio_samples();
+            
+            # Step 3: Parse and index subtitles
+            self.parse_subtitles();
+            
+            # Step 4: Align transcripts with subtitles
+            self.align_transcripts();
+            
+            # Step 5: Calculate time offsets
+            self.calculate_offsets();
+            
+            # Step 6: Apply corrections to subtitle file
+            corrected_file = self.apply_corrections();
+            
+            # Success!
+            self.logger.info( "\n=== SYNCHRONIZATION COMPLETE ===" );
+            
+            if not self.dry_run:
+                self.logger.info( f"✓ Corrected subtitles saved to: {corrected_file}" );
+                self.logger.info( f"✓ Original backed up to: backup/" );
+            else:
+                self.logger.info( f"✓ Dry run completed - no files modified" );
+            
+            # Display final statistics
+            stats = self.alignment_engine.calculate_alignment_stats( self.alignment_matches );
+            if stats:
+                self.logger.info( f"✓ Success rate: {stats['success_rate']:.1%}" );
+                self.logger.info( f"✓ Average similarity: {stats['avg_similarity']:.1%}" );
+            
+            offset_stats = self.offset_calculator.get_offset_stats();
+            if offset_stats:
+                self.logger.info( f"✓ Average offset: {offset_stats['avg_offset']:.1f}s" );
+            
+            return True;
+            
+        except Exception as e:
+            self.logger.error( f"Subtitle synchronization failed: {e}" );
+            if self.debug:
+                raise;
+            return False;
+            
+        finally:
+            # Always cleanup temporary files
+            self.cleanup();
