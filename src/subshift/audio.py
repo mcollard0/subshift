@@ -87,19 +87,19 @@ class AudioProcessor:
         
         return duration;
     
-    def generate_sample_times( self, duration: float, num_samples: int = 4 ) -> List[float]:
+    def generate_sample_times( self, duration: float, num_samples: int = None ) -> List[float]:
         """
-        Generate random sample start times based on video duration.
+        Generate sample start times based on video duration.
         
         Strategy:
-        - Sample every 5 minutes starting from 5:00
-        - Randomly select from available positions
-        - Maximum 15 samples total
+        - Take one sample every 5 minutes starting from 5:00
+        - If more than 15 samples available, randomly select 15
         - Each sample is 1 minute long
+        - num_samples parameter is ignored (kept for compatibility)
         
         Args:
             duration: Video duration in seconds
-            num_samples: Number of samples to generate
+            num_samples: Ignored (kept for backward compatibility)
             
         Returns:
             List of start times in seconds
@@ -107,29 +107,29 @@ class AudioProcessor:
         sample_interval = 5 * 60;  # 5 minutes
         start_offset = 5 * 60;     # Start at 5:00 minutes
         
-        # Calculate available sample positions
-        available_positions = [];
+        # Generate all possible sample positions every 5 minutes
+        all_positions = [];
         current_pos = start_offset;
         
         while current_pos + self.sample_duration < duration:
-            available_positions.append( current_pos );
+            all_positions.append( current_pos );
             current_pos += sample_interval;
         
-        # Limit to maximum 15 samples
-        if len( available_positions ) > 15:
-            available_positions = available_positions[:15];
-        
-        # Randomly select requested number of samples
-        num_samples = min( num_samples, len( available_positions ) );
-        
-        if num_samples == 0:
+        if not all_positions:
             self.logger.warning( "No valid sample positions found" );
             return [];
         
-        sample_times = random.sample( available_positions, num_samples );
+        # If more than 15 samples, randomly select 15
+        if len( all_positions ) > 15:
+            sample_times = random.sample( all_positions, 15 );
+            self.logger.info( f"Video has {len( all_positions )} possible samples, randomly selected 15" );
+        else:
+            sample_times = all_positions;
+            self.logger.info( f"Using all {len( sample_times )} available samples" );
+        
         sample_times.sort();  # Sort for consistent processing
         
-        self.logger.info( f"Generated {len( sample_times )} sample times: {[ t/60 for t in sample_times ]}" );
+        self.logger.info( f"Sample times (minutes): {[ t/60 for t in sample_times ]}" );
         return sample_times;
     
     def extract_audio_sample( self, video_file: Path, start_time: float, index: int ) -> Optional[AudioSample]:
@@ -178,13 +178,15 @@ class AudioProcessor:
             self.logger.error( f"Unexpected error extracting sample {index}: {e}" );
             return None;
     
-    def extract_audio_samples( self, video_file: Path, num_samples: int = 4 ) -> List[AudioSample]:
+    def extract_audio_samples( self, video_file: Path, num_samples: int = None ) -> List[AudioSample]:
         """
         Extract multiple audio samples from video file with retry logic.
         
+        Uses new sampling strategy: one sample every 5 minutes, max 15 total.
+        
         Args:
             video_file: Path to input video file
-            num_samples: Number of samples to extract
+            num_samples: Ignored (kept for backward compatibility)
             
         Returns:
             List of successfully extracted AudioSample objects
@@ -196,8 +198,8 @@ class AudioProcessor:
         if duration is None:
             duration = self.estimate_duration_from_filename( video_file );
         
-        # Generate sample times
-        sample_times = self.generate_sample_times( duration, num_samples );
+        # Generate sample times (every 5 minutes, max 15)
+        sample_times = self.generate_sample_times( duration );
         if not sample_times:
             self.logger.error( "No sample times generated" );
             return [];

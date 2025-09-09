@@ -1,6 +1,7 @@
 """
 Main subtitle synchronization controller that orchestrates the entire process.
 """
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -34,7 +35,6 @@ class SubtitleSynchronizer:
         search_window: int = 20,
         similarity_threshold: float = 0.7,
         min_chars: int = 40,
-        num_samples: int = 4,
         debug: bool = False,
         use_curses: bool = False,
         dry_run: bool = False,
@@ -47,7 +47,6 @@ class SubtitleSynchronizer:
         self.search_window = search_window;
         self.similarity_threshold = similarity_threshold;
         self.min_chars = min_chars;
-        self.num_samples = num_samples;
         self.debug = debug;
         self.use_curses = use_curses;
         self.dry_run = dry_run;
@@ -75,8 +74,7 @@ class SubtitleSynchronizer:
         self.logger.info( "=== STEP 1: AUDIO EXTRACTION ===" );
         
         self.audio_samples = self.audio_processor.extract_audio_samples( 
-            self.video_file,
-            self.num_samples
+            self.video_file
         );
         
         if not self.audio_samples:
@@ -233,12 +231,86 @@ class SubtitleSynchronizer:
         Returns:
             True if successful, False if failed
         """
+        if self.use_curses:
+            return self._run_with_curses();
+        else:
+            return self._run_normal();
+    
+    def _run_with_curses( self ) -> bool:
+        """Run synchronization with curses UI."""
+        from .ui import CursesUI;
+        
+        try:
+            with CursesUI() as ui:
+                ui.draw_header( "SubShift Synchronization" );
+                ui.set_step( "Initializing...", 0, 0 );
+                ui.draw_matches( [] );
+                
+                # Step 1: Extract audio samples
+                ui.set_step( "Extracting audio samples...", 0, 0 );
+                ui.draw_matches( [] );
+                self.extract_audio_samples();
+                
+                # Step 2: Transcribe audio using AI
+                total_samples = len( self.audio_samples );
+                for i, sample in enumerate( self.audio_samples, 1 ):
+                    ui.set_step( "Transcribing audio samples...", i, total_samples );
+                    ui.draw_matches( self.alignment_matches );
+                    
+                    sample.transcription = self.transcription_engine.transcribe( sample );
+                
+                # Step 3: Parse and index subtitles
+                ui.set_step( "Processing subtitles...", 0, 0 );
+                ui.draw_matches( self.alignment_matches );
+                self.parse_subtitles();
+                
+                # Step 4: Align transcripts with subtitles
+                ui.set_step( "Aligning text with subtitles...", 0, 0 );
+                ui.draw_matches( self.alignment_matches );
+                self.align_transcripts();
+                
+                # Step 5: Calculate time offsets
+                ui.set_step( "Calculating time corrections...", 0, 0 );
+                ui.draw_matches( self.alignment_matches );
+                self.calculate_offsets();
+                
+                # Step 6: Apply corrections to subtitle file
+                ui.set_step( "Applying corrections...", 0, 0 );
+                ui.draw_matches( self.alignment_matches );
+                corrected_file = self.apply_corrections();
+                
+                # Step 7: Remove SDH if requested
+                final_file = corrected_file;
+                if self.remove_sdh:
+                    ui.set_step( "Removing SDH content...", 0, 0 );
+                    ui.draw_matches( self.alignment_matches );
+                    final_file = self.remove_sdh_content( corrected_file );
+                
+                # Success!
+                ui.set_step( "Synchronization Complete!", 0, 0 );
+                ui.draw_matches( self.alignment_matches );
+                
+                # Show final results for a moment
+                time.sleep( 2 );
+                
+            return self._log_final_results( final_file, corrected_file );
+            
+        except Exception as e:
+            self.logger.error( f"Subtitle synchronization failed: {e}" );
+            if self.debug:
+                raise;
+            return False;
+            
+        finally:
+            self.cleanup();
+    
+    def _run_normal( self ) -> bool:
+        """Run synchronization with normal logging."""
         try:
             self.logger.info( "Starting SubShift subtitle synchronization" );
-            self.logger.info( f"Video: {self.video_file}" );
+            self.logger.info( f"Media: {self.video_file}" );
             self.logger.info( f"Subtitles: {self.subtitle_file}" );
             self.logger.info( f"Engine: {self.api_engine}" );
-            self.logger.info( f"Samples: {self.num_samples}" );
             self.logger.info( f"Similarity threshold: {self.similarity_threshold:.1%}" );
             self.logger.info( f"Search window: {self.search_window} minutes" );
             
@@ -265,28 +337,7 @@ class SubtitleSynchronizer:
             if self.remove_sdh:
                 final_file = self.remove_sdh_content( corrected_file );
             
-            # Success!
-            self.logger.info( "\n=== SYNCHRONIZATION COMPLETE ===" );
-            
-            if not self.dry_run:
-                self.logger.info( f"✓ Final subtitles saved to: {final_file}" );
-                if self.remove_sdh:
-                    self.logger.info( f"✓ Synchronized subtitles: {corrected_file}" );
-                self.logger.info( f"✓ Original backed up to: backup/" );
-            else:
-                self.logger.info( f"✓ Dry run completed - no files modified" );
-            
-            # Display final statistics
-            stats = self.alignment_engine.calculate_alignment_stats( self.alignment_matches );
-            if stats:
-                self.logger.info( f"✓ Success rate: {stats['success_rate']:.1%}" );
-                self.logger.info( f"✓ Average similarity: {stats['avg_similarity']:.1%}" );
-            
-            offset_stats = self.offset_calculator.get_offset_stats();
-            if offset_stats:
-                self.logger.info( f"✓ Average offset: {offset_stats['avg_offset']:.1f}s" );
-            
-            return True;
+            return self._log_final_results( final_file, corrected_file );
             
         except Exception as e:
             self.logger.error( f"Subtitle synchronization failed: {e}" );
@@ -297,3 +348,28 @@ class SubtitleSynchronizer:
         finally:
             # Always cleanup temporary files
             self.cleanup();
+    
+    def _log_final_results( self, final_file: Path, corrected_file: Path ) -> bool:
+        """Log final results and statistics."""
+        self.logger.info( "\n=== SYNCHRONIZATION COMPLETE ===" );
+        
+        if not self.dry_run:
+            self.logger.info( f"✓ Final subtitles saved to: {final_file}" );
+            if self.remove_sdh:
+                self.logger.info( f"✓ Synchronized subtitles: {corrected_file}" );
+            self.logger.info( f"✓ Original backed up to: backup/" );
+        else:
+            self.logger.info( f"✓ Dry run completed - no files modified" );
+        
+        # Display final statistics
+        stats = self.alignment_engine.calculate_alignment_stats( self.alignment_matches );
+        if stats:
+            self.logger.info( f"✓ Success rate: {stats['success_rate']:.1%}" );
+            self.logger.info( f"✓ Average similarity: {stats['avg_similarity']:.1%}" );
+        
+        offset_stats = self.offset_calculator.get_offset_stats();
+        if offset_stats:
+            self.logger.info( f"✓ Average offset: {offset_stats['avg_offset']:.1f}s" );
+        
+        return True;
+            

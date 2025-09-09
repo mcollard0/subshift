@@ -33,16 +33,18 @@ class SubShiftCLI:
         
         # Required arguments
         parser.add_argument(
-            "--video", "-v",
+            "--media", "--video", "-v",
             required=True,
             type=Path,
-            help="Path to video file (.mp4, .mkv, .avi, etc.)"
+            dest="media",
+            help="Path to media file (.mp4, .mkv, .avi, etc.)"
         );
         
         parser.add_argument(
-            "--subs", "-s", 
+            "--sub", "--subs", "--srt", "--subtitle", "-s", 
             required=True,
             type=Path,
+            dest="subtitle",
             help="Path to subtitle file (.srt format only)"
         );
         
@@ -68,12 +70,6 @@ class SubShiftCLI:
             help="Minimum characters required for subtitle matching (default: 40)"
         );
         
-        parser.add_argument(
-            "--samples",
-            type=int,
-            default=4,
-            help="Number of audio samples to extract (default: 4)"
-        );
         
         parser.add_argument(
             "--api",
@@ -131,15 +127,15 @@ class SubShiftCLI:
         errors = [];
         
         # Check if files exist
-        if not self.args.video.exists():
-            errors.append( f"Video file not found: {self.args.video}" );
+        if not self.args.media.exists():
+            errors.append( f"Media file not found: {self.args.media}" );
         
-        if not self.args.subs.exists():
-            errors.append( f"Subtitle file not found: {self.args.subs}" );
+        if not self.args.subtitle.exists():
+            errors.append( f"Subtitle file not found: {self.args.subtitle}" );
         
         # Check subtitle file extension
-        if self.args.subs.suffix.lower() != ".srt":
-            errors.append( f"Only .srt subtitle files are supported, got: {self.args.subs.suffix}" );
+        if self.args.subtitle.suffix.lower() != ".srt":
+            errors.append( f"Only .srt subtitle files are supported, got: {self.args.subtitle.suffix}" );
         
         # Check API key availability
         if self.args.api == "openai" and not self.openai_api_key:
@@ -183,8 +179,8 @@ class SubShiftCLI:
         
         # Log startup information
         self.logger.info( f"SubShift v0.1.0 starting..." );
-        self.logger.info( f"Video: {self.args.video}" );
-        self.logger.info( f"Subtitles: {self.args.subs}" );
+        self.logger.info( f"Media: {self.args.media}" );
+        self.logger.info( f"Subtitles: {self.args.subtitle}" );
         self.logger.info( f"AI Engine: {self.args.api}" );
         self.logger.info( f"Debug mode: {self.args.debug}" );
         
@@ -209,14 +205,14 @@ def main():
         from .sdh import SDHRemover;
         
         sdh_remover = SDHRemover( args.api, cli.get_api_key() );
-        cost_info = sdh_remover.estimate_cost( args.subs );
+        cost_info = sdh_remover.estimate_cost( args.subtitle );
         
         if 'error' in cost_info:
             cli.logger.error( f"Cost estimation failed: {cost_info['error']}" );
             sys.exit( 1 );
         
         cli.logger.info( "\n=== SDH REMOVAL COST ESTIMATE ===" );
-        cli.logger.info( f"File: {args.subs}" );
+        cli.logger.info( f"File: {args.subtitle}" );
         cli.logger.info( f"Size: {cost_info['file_size_kb']} KB" );
         cli.logger.info( f"Text lines: {cost_info['text_lines']}" );
         cli.logger.info( f"Estimated AI chunks: {cost_info['estimated_chunks']}" );
@@ -230,14 +226,13 @@ def main():
     from .sync import SubtitleSynchronizer;
     
     synchronizer = SubtitleSynchronizer(
-        video_file=args.video,
-        subtitle_file=args.subs,
+        video_file=args.media,
+        subtitle_file=args.subtitle,
         api_engine=args.api,
         api_key=cli.get_api_key(),
         search_window=args.search_window,
         similarity_threshold=args.similarity_threshold,
         min_chars=args.min_chars,
-        num_samples=args.samples,
         debug=args.debug,
         use_curses=args.curses,
         dry_run=args.dry_run,
