@@ -166,6 +166,62 @@ class AudioProcessor:
         self.logger.info( f"Sample times ({interval_desc}): {[ round( t/60, 1 ) for t in sample_times ]}" );
         return sample_times;
     
+    def _apply_audio_preprocessing( self, stream, output_file: Path ):
+        """
+        Apply enhanced audio preprocessing for better AI transcription quality.
+        
+        Preprocessing steps:
+        1. Noise reduction for cleaner speech
+        2. Audio normalization to consistent levels
+        3. High-pass filter to remove low-frequency noise
+        4. Compander to enhance dialogue clarity
+        5. Format conversion to AI-optimal specs
+        
+        Args:
+            stream: FFmpeg input stream
+            output_file: Output file path
+            
+        Returns:
+            Configured FFmpeg output stream
+        """
+        # Build audio filter chain for enhanced transcription
+        filters = [];
+        
+        # 1. High-pass filter to remove low-frequency rumble/noise (below 80Hz)
+        filters.append( 'highpass=f=80' );
+        
+        # 2. Audio normalization to -16dB (good level for speech recognition)
+        filters.append( 'loudnorm=I=-16:LRA=11:TP=-2' );
+        
+        # 3. Noise reduction using FFmpeg's afftdn filter
+        # This helps with robot sounds, mechanical noise, etc.
+        filters.append( 'afftdn=nr=12:nf=-25' );
+        
+        # 4. Compander for dialogue enhancement
+        # Compress loud sounds, expand quiet sounds for more even levels
+        filters.append( 'compand=attacks=0.3:decays=0.8:points=-80/-80|-45/-15|-27/-9|0/-7|20/-7' );
+        
+        # 5. Final level adjustment and limiting
+        filters.append( 'alimiter=level_in=1:level_out=0.8:limit=0.9' );
+        
+        # Combine all filters
+        filter_string = ','.join( filters );
+        
+        self.logger.debug( f"Audio preprocessing chain: {filter_string}" );
+        
+        # Apply filters and output configuration
+        stream = ffmpeg.output(
+            stream,
+            str( output_file ),
+            acodec='pcm_s16le',          # 16-bit PCM for compatibility
+            ar=self.sample_rate,         # 16kHz sample rate
+            ac=self.channels,            # Mono channel
+            af=filter_string,            # Apply preprocessing filters
+            f='wav'                      # WAV format
+        );
+        
+        return stream;
+    
     def extract_audio_sample( self, video_file: Path, start_time: float, index: int, duration: int = None ) -> Optional[AudioSample]:
         """
         Extract a single audio sample from video file with adaptive duration.
@@ -189,14 +245,8 @@ class AudioProcessor:
             
             # FFmpeg command: extract audio segment with specific format
             stream = ffmpeg.input( str( video_file ), ss=start_time, t=duration );
-            stream = ffmpeg.output(
-                stream,
-                str( output_file ),
-                acodec='pcm_s16le',
-                ar=self.sample_rate,
-                ac=self.channels,
-                f='wav'
-            );
+            # Enhanced audio preprocessing for better transcription quality
+            stream = self._apply_audio_preprocessing( stream, output_file );
             
             ffmpeg.run( stream, overwrite_output=True, quiet=True );
             
@@ -330,12 +380,14 @@ class AdaptiveSamplingCoordinator:
     """
     Coordinates adaptive sampling based on timing consistency analysis.
     
-    Strategy:
-    1. Initial Phase: Start with 12 samples for baseline assessment
+    Enhanced Strategy (higher baseline for better accuracy):
+    1. Initial Phase: Start with 16 samples for robust baseline assessment
     2. Analyze timing consistency from initial results
-    3. Consistent timing (<2s variance): Reduce to 8 samples (cost optimization)
-    4. Inconsistent timing (>5s variance): Increase to 35+ samples (accuracy focus)
-    5. Moderate variance (2-5s): Use standard 20 samples
+    3. Consistent timing (<2s variance): Maintain 12 samples (reliability over cost)
+    4. Inconsistent timing (>5s variance): Increase to 40+ samples (maximum accuracy)
+    5. Moderate variance (2-5s): Use enhanced standard 24 samples
+    
+    This provides better coverage for challenging content like animated films.
     """
     
     def __init__( self, debug: bool = False ):
@@ -390,10 +442,10 @@ class AdaptiveSamplingCoordinator:
             Recommended number of samples
         """
         base_recommendations = {
-            "consistent": 8,     # Reduce cost, maintain quality
-            "moderate": 20,      # Standard sampling
-            "inconsistent": 35,  # Maximize accuracy
-            "insufficient_data": 12  # Conservative start
+            "consistent": 12,    # Higher baseline for reliability
+            "moderate": 24,      # Increased standard sampling
+            "inconsistent": 40,  # Higher maximum for difficult content
+            "insufficient_data": 16  # Better initial coverage
         };
         
         recommended = base_recommendations.get( consistency, 20 );

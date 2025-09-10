@@ -59,8 +59,8 @@ class SubShiftCLI:
         parser.add_argument(
             "--similarity-threshold",
             type=float,
-            default=0.7,
-            help="Similarity threshold for Levenshtein matching (0.0-1.0, default: 0.7)"
+            default=0.65,
+            help="Similarity threshold for Levenshtein matching (0.0-1.0, default: 0.65)"
         );
         
         parser.add_argument(
@@ -73,8 +73,8 @@ class SubShiftCLI:
         parser.add_argument(
             "--samples",
             type=int,
-            default=4,
-            help="Number of audio samples to extract (default: 4)"
+            default=16,
+            help="Number of audio samples to extract (default: 16, uses adaptive sampling)"
         );
         
         parser.add_argument(

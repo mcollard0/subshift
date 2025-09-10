@@ -33,9 +33,9 @@ class SubtitleSynchronizer:
         api_engine: str = "openai",
         api_key: str = "",
         search_window: int = 20,
-        similarity_threshold: float = 0.7,
+        similarity_threshold: float = 0.65,
         min_chars: int = 40,
-        samples: int = 4,
+        samples: int = 16,
         debug: bool = False,
         use_curses: bool = False,
         dry_run: bool = False,
@@ -77,13 +77,13 @@ class SubtitleSynchronizer:
         """Extract audio samples from video file using adaptive sampling."""
         self.logger.info( "=== STEP 1: AUDIO EXTRACTION (ADAPTIVE) ===" );
         
-        # Use adaptive sampling if no specific sample count requested
-        if self.samples <= 4:  # Default or low sample count - use adaptive
+        # Use adaptive sampling if no specific sample count requested or using default
+        if self.samples <= 16:  # Default or adaptive sample count - use adaptive
             # Start with initial phase sampling
-            recommended_samples = 12 if self.current_phase == "initial" else self.samples;
+            recommended_samples = 16 if self.current_phase == "initial" else self.samples;
             self.logger.info( f"Adaptive sampling: {self.current_phase} phase, {recommended_samples} samples" );
         else:
-            # User specified sample count - respect it
+            # User specified higher sample count - respect it
             recommended_samples = self.samples;
             self.logger.info( f"User-specified sampling: {recommended_samples} samples" );
         
@@ -171,15 +171,208 @@ class SubtitleSynchronizer:
         if self.debug:
             self.alignment_engine.display_matches( self.alignment_matches, debug=True );
         
-        # Check for successful matches
+        # Check for successful matches and apply adaptive threshold if needed
         successful_matches = self.alignment_engine.get_successful_matches( self.alignment_matches );
+        
         if not successful_matches:
-            self.logger.warning( "No successful alignments found. Consider:" );
-            self.logger.warning( f"- Lowering similarity threshold (current: {self.similarity_threshold:.1%})" );
-            self.logger.warning( f"- Increasing search window (current: {self.search_window}m)" );
-            self.logger.warning( f"- Checking video/subtitle sync quality" );
+            self.logger.warning( "No successful alignments found. Attempting adaptive similarity adjustment..." );
             
+            # Try lower similarity threshold for challenging content
+            original_threshold = self.similarity_threshold;
+            adaptive_threshold = self._get_adaptive_threshold( original_threshold, len( transcribed_samples ) );
+            
+            if adaptive_threshold < original_threshold:
+                self.logger.info( f"Applying adaptive threshold: {original_threshold:.1%} -> {adaptive_threshold:.1%}" );
+                
+                # Temporarily adjust alignment engine threshold
+                self.alignment_engine.similarity_threshold = adaptive_threshold;
+                
+                # Retry alignment with lower threshold
+                self.alignment_matches = self.alignment_engine.align_samples( 
+                    transcribed_samples, 
+                    self.subtitle_processor 
+                );
+                
+                # Check results with adaptive threshold
+                adaptive_matches = self.alignment_engine.get_successful_matches( self.alignment_matches );
+                
+                if adaptive_matches:
+                    self.logger.info( f"Adaptive threshold successful: Found {len( adaptive_matches )} matches" );
+                    self.similarity_threshold = adaptive_threshold;  # Update for future steps
+                else:
+                    self.logger.warning( "Adaptive threshold failed. Consider:" );
+                    self.logger.warning( f"- Further lowering similarity threshold (tried: {adaptive_threshold:.1%})" );
+                    self.logger.warning( f"- Increasing search window (current: {self.search_window}m)" );
+                    self.logger.warning( f"- Checking video/subtitle sync quality" );
+                    
+                    # Restore original threshold
+                    self.alignment_engine.similarity_threshold = original_threshold;
+            else:
+                self.logger.warning( "No adaptive threshold available. Consider:" );
+                self.logger.warning( f"- Manually lowering similarity threshold (current: {self.similarity_threshold:.1%})" );
+                self.logger.warning( f"- Increasing search window (current: {self.search_window}m)" );
+                self.logger.warning( f"- Checking video/subtitle sync quality" );
+        
         return self.alignment_matches;
+    
+    def _get_adaptive_threshold( self, current_threshold: float, sample_count: int ) -> float:
+        """
+        Calculate adaptive similarity threshold for challenging content.
+        
+        Progressively lowers threshold based on content complexity indicators:
+        - More samples with no matches = more challenging content
+        - Already low threshold = complex content detected
+        
+        Args:
+            current_threshold: Current similarity threshold (0.0-1.0)
+            sample_count: Number of transcribed samples attempted
+            
+        Returns:
+            Recommended adaptive threshold (lower = more permissive)
+        """
+        # Define threshold reduction steps for challenging content
+        if current_threshold >= 0.75:  # High threshold - try moderate reduction
+            adaptive_threshold = 0.6;  # Reduce to 60% for first attempt
+        elif current_threshold >= 0.65:  # Medium threshold - try significant reduction
+            adaptive_threshold = 0.5;  # Reduce to 50% for complex content (WALL-E level)
+        elif current_threshold >= 0.55:  # Already low - try minimal reduction
+            adaptive_threshold = 0.45; # Final fallback for very challenging content
+        else:
+            # Already very low - no further adaptation recommended
+            return current_threshold;
+        
+        # Additional adjustment based on sample count
+        # More samples with no matches = increase difficulty assessment
+        if sample_count >= 20:  # Large sample count with no matches = very challenging
+            adaptive_threshold = max( 0.4, adaptive_threshold - 0.1 );
+        elif sample_count >= 10:  # Moderate sample count = somewhat challenging
+            adaptive_threshold = max( 0.45, adaptive_threshold - 0.05 );
+        
+        # Never go below minimum viable threshold
+        adaptive_threshold = max( 0.4, adaptive_threshold );
+        
+        self.logger.debug( f"Adaptive threshold calculation: {current_threshold:.2f} -> {adaptive_threshold:.2f} " \
+                         f"(samples: {sample_count})" );
+        
+        return adaptive_threshold;
+    
+    def should_attempt_multipass( self, offsets: List, success_rate: float ) -> bool:
+        """
+        Determine if multi-pass correction would be beneficial.
+        
+        Multi-pass is recommended when:
+        1. Low success rate but some matches found
+        2. High variance in offsets detected
+        3. User hasn't disabled multi-pass explicitly
+        
+        Args:
+            offsets: List of offset measurements
+            success_rate: Rate of successful alignment matches
+            
+        Returns:
+            True if multi-pass correction is recommended
+        """
+        if len( offsets ) < 2:  # Need at least some data
+            return False;
+        
+        # Extract offset values for analysis
+        offset_values = [ abs( offset[1] if isinstance(offset, tuple) else offset.offset_seconds ) for offset in offsets ];
+        
+        # Multi-pass beneficial for low success rates
+        if success_rate < 0.4 and len( offsets ) >= 2:
+            self.logger.info( f"Multi-pass recommended: Low success rate ({success_rate:.1%})" );
+            return True;
+        
+        # Multi-pass beneficial for high variance (inconsistent timing)
+        if len( offset_values ) >= 3:
+            import statistics;
+            variance = statistics.variance( offset_values );
+            if variance > 25.0:  # High variance (5s+ standard deviation)
+                self.logger.info( f"Multi-pass recommended: High timing variance ({variance:.1f})" );
+                return True;
+        
+        # Multi-pass for moderate cases with room for improvement
+        if 0.4 <= success_rate < 0.6 and len( offsets ) >= 3:
+            self.logger.info( f"Multi-pass recommended: Moderate success with room for improvement" );
+            return True;
+        
+        return False;
+    
+    def run_multipass_correction( self, initial_corrected_file: Path ) -> Path:
+        """
+        Run a second-pass correction to refine the initial results.
+        
+        Strategy:
+        1. Use initial corrected file as input
+        2. Extract more audio samples (1.5x original)
+        3. Use lower similarity threshold for refinement
+        4. Apply only if improvement is detected
+        
+        Args:
+            initial_corrected_file: Path to first-pass corrected file
+            
+        Returns:
+            Path to final corrected file (may be same as input if no improvement)
+        """
+        self.logger.info( "\n=== MULTI-PASS REFINEMENT ===" );
+        self.logger.info( f"Starting second pass with {initial_corrected_file}" );
+        
+        # Store original state
+        original_subtitle_file = self.subtitle_file;
+        original_samples = self.samples;
+        original_threshold = self.similarity_threshold;
+        original_audio_samples = self.audio_samples;
+        original_matches = self.alignment_matches;
+        
+        try:
+            # Configure for refinement pass
+            self.subtitle_file = initial_corrected_file;  # Use corrected file as input
+            self.samples = min( 32, int( original_samples * 1.5 ) );  # 1.5x samples, max 32
+            self.similarity_threshold = max( 0.4, original_threshold - 0.1 );  # Lower threshold
+            
+            self.logger.info( f"Refinement pass: {original_samples} -> {self.samples} samples, " \
+                            f"{original_threshold:.1%} -> {self.similarity_threshold:.1%} threshold" );
+            
+            # Clear previous results
+            self.audio_samples = [];
+            self.alignment_matches = [];
+            
+            # Run refinement pipeline
+            self.extract_audio_samples();
+            self.transcribe_audio_samples();
+            self.parse_subtitles();  # Re-parse the corrected subtitle file
+            self.align_transcripts();
+            
+            # Check if we got better results
+            new_matches = self.alignment_engine.get_successful_matches( self.alignment_matches );
+            new_success_rate = len( new_matches ) / len( self.alignment_matches ) if self.alignment_matches else 0;
+            
+            if len( new_matches ) >= 2 and new_success_rate >= 0.3:
+                self.logger.info( f"Refinement successful: {len( new_matches )} matches, {new_success_rate:.1%} success rate" );
+                
+                # Apply refinement corrections
+                refined_offsets = self.calculate_offsets();
+                if refined_offsets:
+                    refined_file = self.apply_corrections();
+                    self.logger.info( f"Multi-pass correction applied: {refined_file}" );
+                    return refined_file;
+            else:
+                self.logger.info( f"Refinement unsuccessful: {len( new_matches )} matches, {new_success_rate:.1%} success rate" );
+                self.logger.info( "Keeping original correction" );
+                
+        except Exception as e:
+            self.logger.warning( f"Multi-pass correction failed: {e}" );
+            self.logger.info( "Falling back to single-pass result" );
+            
+        finally:
+            # Restore original state
+            self.subtitle_file = original_subtitle_file;
+            self.samples = original_samples;
+            self.similarity_threshold = original_threshold;
+            self.audio_samples = original_audio_samples;
+            self.alignment_matches = original_matches;
+        
+        return initial_corrected_file;  # Return original if refinement failed
     
     def calculate_offsets( self ) -> List:
         """Calculate time offsets from alignment matches."""
@@ -195,7 +388,7 @@ class SubtitleSynchronizer:
             raise RuntimeError( "No successful matches found for offset calculation" );
         
         # Adaptive analysis: Check if we need different sampling strategy
-        if self.samples <= 4 and len( offsets ) >= 3:  # Only for adaptive mode with sufficient data
+        if self.samples <= 16 and len( offsets ) >= 3:  # Only for adaptive mode with sufficient data
             offset_values = [ abs( offset.offset_seconds ) for offset in offsets ];
             success_rate = len( [ match for match in self.alignment_matches if match.is_match ] ) / len( self.alignment_matches );
             
@@ -235,17 +428,35 @@ class SubtitleSynchronizer:
         return offsets;
     
     def apply_corrections( self ) -> Path:
-        """Apply calculated corrections to subtitle file."""
+        """Apply calculated corrections to subtitle file with optional multi-pass refinement."""
         self.logger.info( "=== STEP 6: SUBTITLE CORRECTION ===" );
         
         if not self.offset_calculator.offsets:
             raise RuntimeError( "No offsets calculated. Run calculate_offsets first." );
         
-        # Apply corrections and save
+        # Apply initial corrections and save (pass matches for weighted uniform correction)
         corrected_file = self.offset_calculator.apply_corrections( 
             self.subtitle_file,
+            matches=self.alignment_matches,
             dry_run=self.dry_run
         );
+        
+        # Check if multi-pass correction would be beneficial
+        if not self.dry_run:  # Only for actual corrections, not dry runs
+            successful_matches = self.alignment_engine.get_successful_matches( self.alignment_matches );
+            success_rate = len( successful_matches ) / len( self.alignment_matches ) if self.alignment_matches else 0;
+            
+            if self.should_attempt_multipass( self.offset_calculator.offsets, success_rate ):
+                self.logger.info( "\n=== INITIATING MULTI-PASS CORRECTION ===" );
+                final_file = self.run_multipass_correction( corrected_file );
+                
+                if final_file != corrected_file:
+                    self.logger.info( f"Multi-pass refinement successful: {final_file}" );
+                    return final_file;
+                else:
+                    self.logger.info( "Multi-pass refinement provided no improvement" );
+            else:
+                self.logger.info( "Multi-pass correction not recommended for this content" );
         
         return corrected_file;
     
