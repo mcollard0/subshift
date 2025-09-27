@@ -28,7 +28,7 @@ class SubShiftCLI:
         parser = argparse.ArgumentParser(
             prog="subshift",
             description="Subtitle synchronization utility using AI transcripts and Levenshtein matching",
-            epilog="Environment variables: OPENAI_API_KEY, GOOGLE_PLACES_API_KEY"
+            epilog="Environment variables: OPENAI_API_KEY, GOOGLE_PLACES_API_KEY (not required for local engines)"
         );
         
         # Required arguments (media optional for SDH cost estimation)
@@ -79,9 +79,9 @@ class SubShiftCLI:
         
         parser.add_argument(
             "--api",
-            choices=[ "openai", "google" ],
+            choices=[ "openai", "google", "local", "local-tiny", "local-base", "local-small", "local-medium", "local-large" ],
             default="openai",
-            help="AI transcription engine to use (default: openai)"
+            help="AI transcription engine to use (default: openai). Local options: local/local-tiny (39MB), local-base (74MB), local-small (244MB), local-medium (769MB), local-large (1.5GB)"
         );
         
         # Mode flags  
@@ -147,7 +147,7 @@ class SubShiftCLI:
         if self.args.subtitle.suffix.lower() != ".srt":
             errors.append( f"Only .srt subtitle files are supported, got: {self.args.subtitle.suffix}" );
         
-        # Check API key availability
+        # Check API key availability (not needed for local engines)
         if self.args.api == "openai" and not self.openai_api_key:
             errors.append( "OpenAI API key not found. Set OPENAI_API_KEY environment variable." );
         
@@ -195,6 +195,23 @@ class SubShiftCLI:
         self.logger.info( f"AI Engine: {self.args.api}" );
         self.logger.info( f"Debug mode: {self.args.debug}" );
         
+        # Show hardware info for local engines in debug mode
+        if self.args.debug and self.args.api.startswith( "local" ):
+            try:
+                from .hardware import get_system_capabilities;
+                caps = get_system_capabilities();
+                self.logger.debug( f"Hardware: {caps.cpu_info['brand']} ({caps.cpu_info['cores']} cores)" );
+                self.logger.debug( f"RAM: {caps.memory_gb:.1f} GB available" );
+                if caps.cuda_available:
+                    self.logger.debug( f"CUDA: Available (v{caps.cuda_version})" );
+                if caps.nvidia_gpus:
+                    for gpu in caps.nvidia_gpus:
+                        self.logger.debug( f"GPU: {gpu.name} ({gpu.memory_gb:.1f} GB)" );
+                else:
+                    self.logger.debug( f"GPU: None detected (will use CPU)" );
+            except Exception as e:
+                self.logger.debug( f"Could not detect hardware: {e}" );
+        
         return self.args;
     
     def get_api_key( self ):
@@ -203,6 +220,8 @@ class SubShiftCLI:
             return self.openai_api_key;
         elif self.args.api == "google":
             return self.google_api_key;
+        elif self.args.api.startswith( "local" ):
+            return None;  # Local engines don't need API keys
         return None;
 
 
